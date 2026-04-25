@@ -280,8 +280,20 @@ class Database:
         if client is None:
             raise RuntimeError("Supabase client is unavailable")
 
+        present_tables: list[str] = []
+        missing_tables: list[str] = []
         for table_name in REQUIRED_TABLES:
-            client.table(table_name).select("*", count="exact").limit(1).execute()
+            try:
+                client.table(table_name).select("*", count="exact").limit(1).execute()
+                present_tables.append(table_name)
+            except Exception:
+                missing_tables.append(table_name)
+
+        self.logger.info("Supabase table check present: %s", ", ".join(present_tables) if present_tables else "none")
+        self.logger.info("Supabase table check missing: %s", ", ".join(missing_tables) if missing_tables else "none")
+
+        if missing_tables:
+            raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
 
     def _supabase_upsert_business(self, business: Business) -> Optional[str]:
         client = self._supabase_public()
@@ -509,7 +521,10 @@ class Database:
             rows = conn.execute(table_check, {"table_names": list(REQUIRED_TABLES)}).scalars().all()
 
         found_tables = {str(name) for name in rows}
+        present_tables = [table_name for table_name in REQUIRED_TABLES if table_name in found_tables]
         missing_tables = [table_name for table_name in REQUIRED_TABLES if table_name not in found_tables]
+        self.logger.info("PostgreSQL table check present: %s", ", ".join(present_tables) if present_tables else "none")
+        self.logger.info("PostgreSQL table check missing: %s", ", ".join(missing_tables) if missing_tables else "none")
         if missing_tables:
             raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
 
