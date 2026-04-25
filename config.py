@@ -15,7 +15,7 @@ load_dotenv(BASE_DIR / ".env")
 class Settings:
     database_url: str
     supabase_url: str
-    supabase_service_role_key: str
+    supabase_secret_key: str
     enable_email_sending: bool
     gmail_sender_email: str
     gmail_app_password: str
@@ -50,7 +50,7 @@ def load_settings() -> Settings:
     return Settings(
         database_url=os.getenv("DATABASE_URL", ""),
         supabase_url=os.getenv("SUPABASE_URL", ""),
-        supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
+        supabase_secret_key=os.getenv("SUPABASE_SECRET_KEY", ""),
         enable_email_sending=_as_bool(os.getenv("ENABLE_EMAIL_SENDING", "false")),
         gmail_sender_email=os.getenv("GMAIL_SENDER_EMAIL", ""),
         gmail_app_password=os.getenv("GMAIL_APP_PASSWORD", ""),
