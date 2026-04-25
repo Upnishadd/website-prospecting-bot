@@ -1,0 +1,139 @@
+name: Website Prospecting Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      niche:
+        description: Business niche to prospect
+        required: false
+        default: ""
+      location:
+        description: Location to prospect
+        required: false
+        default: ""
+      max_results:
+        description: Maximum businesses to inspect
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: website-prospecting-bot
+  cancel-in-progress: false
+
+jobs:
+  run-prospecting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: "1"
+      ENABLE_CSV_EXPORT: "false"
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      ENABLE_EMAIL_SENDING: ${{ vars.ENABLE_EMAIL_SENDING || 'false' }}
+      GMAIL_SENDER_EMAIL: ${{ secrets.GMAIL_SENDER_EMAIL }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || 'Website Issue Prospecting Bot' }}
+      USER_AGENT: WebsiteIssueProspectingBot/1.0 (+public automation workflow; admin contact required)
+      REQUEST_TIMEOUT: "15"
+      MAX_REDIRECTS: "5"
+      MIN_DELAY_SECONDS: "2.0"
+      MAX_DELAY_SECONDS: "4.0"
+      MAX_REQUESTS_PER_DOMAIN: "10"
+      MAX_ASSET_CHECKS: "6"
+      MAX_SEARCH_PAGES: "3"
+      MAX_OUTREACH_SCORE: "70"
+      ENABLE_PLAYWRIGHT: "false"
+      SEARCH_PROVIDER: duckduckgo_html
+      SEARCH_BASE_URL: https://html.duckduckgo.com/html/
+      LOG_LEVEL: INFO
+      EXPORT_DIR: exports
+      DEFAULT_MAX_RESULTS: ${{ vars.PROSPECT_MAX_RESULTS || '20' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Resolve run inputs
+        shell: bash
+        run: |
+          NICHE="${{ github.event.inputs.niche }}"
+          LOCATION="${{ github.event.inputs.location }}"
+          MAX_RESULTS="${{ github.event.inputs.max_results }}"
+          if [ -z "$MAX_RESULTS" ]; then MAX_RESULTS="$DEFAULT_MAX_RESULTS"; fi
+
+          echo "NICHE=$NICHE" >> "$GITHUB_ENV"
+          echo "LOCATION=$LOCATION" >> "$GITHUB_ENV"
+          echo "MAX_RESULTS=$MAX_RESULTS" >> "$GITHUB_ENV"
+
+      - name: Run prospecting bot
+        id: bot_run
+        shell: bash
+        run: |
+          set +e
+          if [ -n "$NICHE" ] && [ -n "$LOCATION" ]; then
+            python main.py --niche "$NICHE" --location "$LOCATION" --max-results "$MAX_RESULTS" --no-csv
+          else
+            python main.py --max-results "$MAX_RESULTS" --no-csv
+          fi
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Update automation heartbeat
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p docs
+          RUN_STATUS="success"
+          if [ "${{ steps.bot_run.outputs.exit_code }}" != "0" ]; then
+            RUN_STATUS="failed"
+          fi
+
+          cat > docs/automation-heartbeat.md <<EOF
+          # Automation Heartbeat
+
+          This file is updated by the scheduled GitHub Actions workflow to keep repository activity alive.
+
+          - Last run (UTC): $(date -u +"%Y-%m-%d %H:%M:%S")
+          - Workflow status: $RUN_STATUS
+          - Niche override: ${NICHE:-queue-driven}
+          - Location override: ${LOCATION:-queue-driven}
+          - Max results: $MAX_RESULTS
+          - Trigger: ${{ github.event_name }}
+          - Commit: ${{ github.sha }}
+
+          No secrets are stored in this file.
+          EOF
+
+      - name: Commit heartbeat update
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/automation-heartbeat.md
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: update automation heartbeat"
+          git push
+
+      - name: Fail workflow if bot run failed
+        if: steps.bot_run.outputs.exit_code != '0'
+        shell: bash
+        run: exit 1
