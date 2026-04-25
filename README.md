@@ -81,7 +81,7 @@ playwright install chromium
 See `.env.example` for the full list. The main values are:
 
 - `SUPABASE_URL`: your Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY`: server-side Supabase key for local runs or backend jobs only
+- `SUPABASE_SECRET_KEY`: server-side Supabase secret key for local runs or backend jobs only
 - `DATABASE_URL`: optional PostgreSQL fallback if you are not using the Supabase API client
 - `ENABLE_EMAIL_SENDING`: set to `true` to actually send outreach emails
 - `GMAIL_SENDER_EMAIL`: Gmail address used to send outreach
@@ -109,7 +109,7 @@ To create the required tables in Supabase/PostgreSQL:
 
 Supabase integration notes:
 
-- The app prefers `SUPABASE_URL` plus `SUPABASE_SERVICE_ROLE_KEY` when they are set.
+- The app prefers `SUPABASE_URL` plus `SUPABASE_SECRET_KEY` when they are set.
 - Business records are upserted by `normalized_domain`.
 - Website audits are inserted as new rows.
 - Outreach drafts are inserted as new rows.
@@ -224,7 +224,7 @@ What it does:
 Recommended repository secrets:
 
 - `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_SECRET_KEY`
 - `GMAIL_SENDER_EMAIL`
 - `GMAIL_APP_PASSWORD`
 

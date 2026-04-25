@@ -31,7 +31,7 @@ class Database:
         self._initialize_backend()
 
     def _initialize_backend(self) -> None:
-        if self.settings.supabase_url and self.settings.supabase_service_role_key:
+        if self.settings.supabase_url and self.settings.supabase_secret_key:
             self._initialize_supabase()
             if self.available:
                 return
@@ -51,7 +51,7 @@ class Database:
         try:
             self.supabase = create_client(
                 self.settings.supabase_url,
-                self.settings.supabase_service_role_key,
+                self.settings.supabase_secret_key,
             )
             self.backend = "supabase"
             self.available = True
