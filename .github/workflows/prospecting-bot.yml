@@ -131,7 +131,8 @@ jobs:
             exit 0
           fi
           git commit -m "chore: update automation heartbeat"
-          git push
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Fail workflow if bot run failed
         if: steps.bot_run.outputs.exit_code != '0'

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -233,20 +234,29 @@ class Database:
         self.available = False
         self.backend = "disabled"
 
-    def _supabase_upsert_business(self, business: Business) -> Optional[str]:
+    def _supabase_public(self):
         if self.supabase is None:
+            return None
+        schema_method = getattr(self.supabase, "schema", None)
+        if callable(schema_method):
+            return schema_method("public")
+        return self.supabase
+
+    def _supabase_upsert_business(self, business: Business) -> Optional[str]:
+        client = self._supabase_public()
+        if client is None:
             return None
 
         payload = business.model_dump()
         response = (
-            self.supabase.table("businesses")
+            client.table("businesses")
             .upsert(payload, on_conflict="normalized_domain")
             .execute()
         )
         data = response.data or []
         if not data:
             lookup = (
-                self.supabase.table("businesses")
+                client.table("businesses")
                 .select("id")
                 .eq("normalized_domain", business.normalized_domain)
                 .limit(1)
@@ -256,21 +266,23 @@ class Database:
         return str(data[0]["id"]) if data else None
 
     def _supabase_insert_audit(self, business_id: str, audit: WebsiteAudit) -> Optional[str]:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return None
 
         payload = audit.model_dump()
         payload["business_id"] = business_id
-        response = self.supabase.table("website_audits").insert(payload).execute()
+        response = client.table("website_audits").insert(payload).execute()
         data = response.data or []
         return str(data[0]["id"]) if data else None
 
     def _supabase_insert_outreach(self, audit_id: str, draft: OutreachDraft) -> Optional[str]:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return None
 
         payload = {"audit_id": audit_id, **draft.model_dump()}
-        response = self.supabase.table("outreach_drafts").insert(payload).execute()
+        response = client.table("outreach_drafts").insert(payload).execute()
         data = response.data or []
         return str(data[0]["id"]) if data else None
 
@@ -281,7 +293,8 @@ class Database:
         send_status: str,
         send_error: str | None,
     ) -> None:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return
 
         payload: dict[str, object] = {
@@ -291,14 +304,15 @@ class Database:
         }
         if send_status == "sent":
             payload["sent_at"] = datetime.now(timezone.utc).isoformat()
-        self.supabase.table("outreach_drafts").update(payload).eq("id", outreach_id).execute()
+        client.table("outreach_drafts").update(payload).eq("id", outreach_id).execute()
 
     def _supabase_get_next_queue_item(self) -> Optional[NicheCityQueueItem]:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return None
 
         response = (
-            self.supabase.table("niche_city_queue")
+            client.table("niche_city_queue")
             .select("*")
             .eq("active", True)
             .eq("is_exhausted", False)
@@ -312,11 +326,12 @@ class Database:
         return NicheCityQueueItem.model_validate(data[0]) if data else None
 
     def _supabase_mark_queue_item_started(self, queue_item_id: int) -> None:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return
 
         current = (
-            self.supabase.table("niche_city_queue")
+            client.table("niche_city_queue")
             .select("runs_count")
             .eq("id", queue_item_id)
             .limit(1)
@@ -326,7 +341,7 @@ class Database:
         if current.data:
             runs_count = int(current.data[0].get("runs_count") or 0)
 
-        self.supabase.table("niche_city_queue").update(
+        client.table("niche_city_queue").update(
             {
                 "last_run_at": datetime.now(timezone.utc).isoformat(),
                 "runs_count": runs_count + 1,
@@ -334,10 +349,11 @@ class Database:
         ).eq("id", queue_item_id).execute()
 
     def _supabase_mark_queue_item_exhausted(self, queue_item_id: int) -> None:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return
 
-        self.supabase.table("niche_city_queue").update(
+        client.table("niche_city_queue").update(
             {
                 "is_exhausted": True,
                 "active": False,
@@ -345,11 +361,12 @@ class Database:
         ).eq("id", queue_item_id).execute()
 
     def _supabase_get_seen_domains_for_queue_item(self, queue_item_id: int) -> set[str]:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return set()
 
         response = (
-            self.supabase.table("niche_city_seen_domains")
+            client.table("niche_city_seen_domains")
             .select("normalized_domain")
             .eq("queue_item_id", queue_item_id)
             .execute()
@@ -361,14 +378,15 @@ class Database:
         }
 
     def _supabase_add_seen_domain_for_queue_item(self, queue_item_id: int, normalized_domain: str) -> None:
-        if self.supabase is None:
+        client = self._supabase_public()
+        if client is None:
             return
 
         payload = {
             "queue_item_id": queue_item_id,
             "normalized_domain": normalized_domain.lower(),
         }
-        self.supabase.table("niche_city_seen_domains").upsert(
+        client.table("niche_city_seen_domains").upsert(
             payload,
             on_conflict="queue_item_id,normalized_domain",
         ).execute()
@@ -437,6 +455,9 @@ class Database:
 
         payload = audit.model_dump()
         payload["business_id"] = business_id
+        payload["outdated_design_signals"] = json.dumps(payload["outdated_design_signals"])
+        payload["notes"] = json.dumps(payload["notes"])
+        payload["issue_summary"] = json.dumps(payload["issue_summary"])
 
         query = text(
             """
