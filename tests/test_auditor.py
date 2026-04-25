@@ -35,6 +35,7 @@ def test_parse_page_features_extracts_expected_signals():
 def test_blocked_page_detection_handles_status_and_cloudflare_content():
     assert detect_blocked_page(403, "", {}) is True
     assert detect_blocked_page(200, "Attention Required! Cloudflare", {"server": "cloudflare"}) is True
+    assert detect_blocked_page(200, "<html><body>Normal page with sign in link</body></html>", {"server": "cloudflare"}) is False
     assert detect_blocked_page(200, "<html>normal page</html>", {"server": "nginx"}) is False
 
 
@@ -54,3 +55,15 @@ def test_classify_page_protection_detects_captcha_login_and_paywall():
     assert login.reason in {"login_form_required", "auth_redirect_or_login_wall", "login_wall_text_detected"}
     assert paywall.audit_status == "paywalled"
     assert paywall.reason == "paywall_or_membership_required"
+
+
+def test_classify_page_protection_detects_search_interstitial_on_http_202():
+    interstitial = classify_page_protection(
+        202,
+        "<html><body>Sorry, but your request looks automated. Prove you are human.</body></html>",
+        {"server": "nginx"},
+        "https://html.duckduckgo.com/html/?q=dentists+sydney",
+    )
+
+    assert interstitial.audit_status == "blocked_or_challenged"
+    assert interstitial.reason == "challenge_or_interstitial_page"

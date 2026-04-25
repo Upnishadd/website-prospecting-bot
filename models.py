@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -30,7 +30,7 @@ class Business(BaseModel):
 
 class WebsiteAudit(BaseModel):
     business_domain: str
-    checked_at: datetime = Field(default_factory=datetime.utcnow)
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     audit_status: AuditStatus = "success"
     blocked_reason: Optional[str] = None
     final_url: Optional[str] = None

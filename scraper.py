@@ -4,12 +4,16 @@ import json
 import logging
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import httpx
 from bs4 import BeautifulSoup
 
 from config import Settings
 from models import Business, SearchResult
 from utils import (
+    DomainLimitExceeded,
     PoliteHttpClient,
+    RedirectLimitExceeded,
+    RobotsDisallowed,
     classify_page_protection,
     extract_emails,
     extract_phone_numbers,
@@ -19,6 +23,10 @@ from utils import (
     normalize_name,
     normalize_url,
 )
+
+
+class SearchProviderBlocked(Exception):
+    pass
 
 
 class BusinessScraper:
@@ -48,10 +56,13 @@ class BusinessScraper:
         max_results: int,
         excluded_domains: set[str],
     ) -> list[Business]:
+        if max_results <= 0:
+            return []
+
         businesses: list[Business] = []
         seen_domains: set[str] = set()
 
-        candidate_limit = max(max_results + 10, max_results * 3)
+        candidate_limit = min(max_results + 10, max_results * 2)
         for result in self.search(niche, location, max_results=candidate_limit):
             if len(businesses) >= max_results:
                 break
@@ -88,7 +99,19 @@ class BusinessScraper:
                 "s": str(page * 30),
             }
             url = f"{self.settings.search_base_url}?{urlencode(params)}"
-            fetch = self.client.get(url, respect_robots=False)
+            try:
+                fetch = self.client.get(url)
+            except RobotsDisallowed as exc:
+                raise SearchProviderBlocked("search_provider_disallowed_by_robots") from exc
+            except DomainLimitExceeded as exc:
+                raise SearchProviderBlocked("search_provider_domain_rate_limit_reached") from exc
+            except RedirectLimitExceeded as exc:
+                raise SearchProviderBlocked("search_provider_redirect_limit_reached") from exc
+            except httpx.TimeoutException as exc:
+                raise SearchProviderBlocked("search_provider_timeout") from exc
+            except httpx.HTTPError as exc:
+                raise SearchProviderBlocked("search_provider_request_failed") from exc
+
             protection = classify_page_protection(
                 fetch.response.status_code,
                 fetch.response.text,
@@ -96,11 +119,17 @@ class BusinessScraper:
                 final_url=str(fetch.response.url),
             )
             if protection.blocked:
-                self.logger.warning("Search provider blocked or challenged the request on page %s; stopping search", page + 1)
-                break
+                raise SearchProviderBlocked(protection.reason or "search_provider_blocked_or_challenged")
+
+            if fetch.response.status_code != 200:
+                raise SearchProviderBlocked(f"search_provider_http_{fetch.response.status_code}")
+
             soup = BeautifulSoup(fetch.response.text, "html.parser")
 
             result_anchors = soup.select(".result__title a.result__a, a.result__a")
+            if page == 0 and not result_anchors:
+                raise SearchProviderBlocked("search_provider_returned_no_parseable_results")
+
             for anchor in result_anchors:
                 href = anchor.get("href") or ""
                 resolved = self._clean_search_link(href)
@@ -134,7 +163,15 @@ class BusinessScraper:
         return normalize_url(href)
 
     def extract_business_from_site(self, result: SearchResult, location: str) -> Business | None:
-        fetch = self.client.get(result.url)
+        try:
+            fetch = self.client.get(result.url)
+        except (RobotsDisallowed, DomainLimitExceeded, RedirectLimitExceeded, httpx.TimeoutException) as exc:
+            self.logger.debug("Skipping candidate %s: %s", result.url, exc)
+            return None
+        except httpx.HTTPError as exc:
+            self.logger.debug("Skipping candidate %s after HTTP error: %s", result.url, exc)
+            return None
+
         html = fetch.response.text
         if fetch.response.status_code >= 400:
             return None

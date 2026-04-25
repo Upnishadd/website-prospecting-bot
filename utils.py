@@ -30,11 +30,19 @@ CAPTCHA_PATTERNS = [
     "verify you are human",
     "unusual traffic",
     "challenge page",
+    "prove you are human",
+    "automated requests",
+    "automated traffic",
+    "sorry, but your request looks automated",
+    "unfortunately, bots use duckduckgo too",
 ]
 WAF_PATTERNS = [
     "cf-chl-bypass",
+    "cf-chl",
+    "__cf_chl",
+    "cf-browser-verification",
+    "cf-turnstile",
     "attention required",
-    "cloudflare",
     "browser integrity check",
     "checking your browser before accessing",
     "request unsuccessful",
@@ -55,6 +63,13 @@ LOGIN_PATTERNS = [
     "account required",
     "authentication required",
 ]
+LOGIN_WALL_PATTERNS = [
+    "login required",
+    "please log in",
+    "please sign in",
+    "account required",
+    "authentication required",
+]
 PAYWALL_PATTERNS = [
     "subscribe to continue",
     "premium content",
@@ -62,7 +77,6 @@ PAYWALL_PATTERNS = [
     "members only",
     "subscriber only",
     "become a member",
-    "continue reading",
 ]
 SOCIAL_HOSTS = {
     "facebook.com",
@@ -163,7 +177,7 @@ def classify_page_protection(
     final_url: Optional[str] = None,
 ) -> ProtectionDetection:
     lowered = (body or "").lower()
-    headers = headers or {}
+    headers = {key.lower(): str(value) for key, value in (headers or {}).items()}
     server = headers.get("server", "").lower()
     location = headers.get("location", "").lower()
     final_location = (final_url or "").lower()
@@ -172,10 +186,20 @@ def classify_page_protection(
         reason = "http_403_forbidden" if status_code == 403 else "http_429_rate_limited"
         return ProtectionDetection(blocked=True, reason=reason, audit_status="blocked_or_challenged")
 
+    if status_code == 202 and any(pattern in lowered for pattern in CAPTCHA_PATTERNS + WAF_PATTERNS):
+        return ProtectionDetection(blocked=True, reason="challenge_or_interstitial_page", audit_status="blocked_or_challenged")
+
     if any(pattern in lowered for pattern in CAPTCHA_PATTERNS):
         return ProtectionDetection(blocked=True, reason="captcha_or_human_verification", audit_status="blocked_or_challenged")
 
-    if "cloudflare" in server or any(pattern in lowered for pattern in WAF_PATTERNS):
+    has_waf_marker = any(pattern in lowered for pattern in WAF_PATTERNS)
+    cloudflare_challenge = "cloudflare" in server and (
+        status_code in {403, 429, 503}
+        or has_waf_marker
+        or "attention required" in lowered
+        or "checking your browser" in lowered
+    )
+    if has_waf_marker or cloudflare_challenge:
         return ProtectionDetection(blocked=True, reason="cloudflare_or_waf_challenge", audit_status="blocked_or_challenged")
 
     if _looks_like_auth_path(location) or _looks_like_auth_path(final_location):
@@ -191,7 +215,7 @@ def classify_page_protection(
             login_forms += 1
     if password_inputs and login_forms:
         return ProtectionDetection(blocked=True, reason="login_form_required", audit_status="login_required")
-    if any(pattern in lowered for pattern in LOGIN_PATTERNS):
+    if any(pattern in lowered for pattern in LOGIN_WALL_PATTERNS):
         return ProtectionDetection(blocked=True, reason="login_wall_text_detected", audit_status="login_required")
 
     if any(pattern in lowered for pattern in PAYWALL_PATTERNS):
@@ -222,7 +246,9 @@ def _looks_like_auth_path(url_or_path: str) -> bool:
 
 
 def random_delay(settings: Settings) -> None:
-    time.sleep(random.uniform(settings.min_delay_seconds, settings.max_delay_seconds))
+    minimum = max(0.0, settings.min_delay_seconds)
+    maximum = max(minimum, settings.max_delay_seconds)
+    time.sleep(random.uniform(minimum, maximum))
 
 
 def get_text_excerpt(html: str) -> str:
@@ -231,7 +257,11 @@ def get_text_excerpt(html: str) -> str:
 
 
 def parse_retry_after(headers: dict[str, str]) -> Optional[float]:
-    value = headers.get("retry-after")
+    value = None
+    for key, header_value in headers.items():
+        if key.lower() == "retry-after":
+            value = header_value
+            break
     if not value:
         return None
     if value.isdigit():
@@ -268,7 +298,9 @@ class RobotsCache:
             parser = RobotFileParser()
             try:
                 response = self._client.get(robots_url)
-                if response.status_code >= 400:
+                if response.status_code in {401, 403, 429} or response.status_code >= 500:
+                    parser.parse(["User-agent: *", "Disallow: /"])
+                elif response.status_code >= 400:
                     parser.parse([])
                 else:
                     parser.parse(response.text.splitlines())
@@ -328,7 +360,11 @@ class PoliteHttpClient:
         if response.status_code == 429:
             wait_for = parse_retry_after(dict(response.headers))
             if wait_for:
-                time.sleep(wait_for)
+                self.logger.info(
+                    "Received HTTP 429 with Retry-After %.1fs for %s; returning rate-limited response",
+                    wait_for,
+                    url,
+                )
         return FetchResult(response=response, elapsed=elapsed)
 
     def request(self, method: str, url: str, respect_robots: bool = True, **kwargs) -> FetchResult:

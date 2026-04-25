@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
 from config import Settings
@@ -300,22 +300,34 @@ class Database:
         if client is None:
             return None
 
-        payload = business.model_dump()
-        response = (
+        payload = business.model_dump(mode="json")
+        lookup = (
             client.table("businesses")
-            .upsert(payload, on_conflict="normalized_domain")
+            .select("id")
+            .eq("normalized_domain", business.normalized_domain)
+            .limit(1)
             .execute()
         )
-        data = response.data or []
+        data = lookup.data or []
         if not data:
             lookup = (
                 client.table("businesses")
                 .select("id")
-                .eq("normalized_domain", business.normalized_domain)
+                .eq("normalized_name", business.normalized_name)
+                .eq("location", business.location)
                 .limit(1)
                 .execute()
             )
             data = lookup.data or []
+
+        if data:
+            business_id = str(data[0]["id"])
+            update_payload = {key: value for key, value in payload.items() if value is not None}
+            client.table("businesses").update(update_payload).eq("id", business_id).execute()
+            return business_id
+
+        response = client.table("businesses").insert(payload).execute()
+        data = response.data or []
         return str(data[0]["id"]) if data else None
 
     def _supabase_insert_audit(self, business_id: str, audit: WebsiteAudit) -> Optional[str]:
@@ -323,7 +335,7 @@ class Database:
         if client is None:
             return None
 
-        payload = audit.model_dump()
+        payload = audit.model_dump(mode="json")
         payload["business_id"] = business_id
         response = client.table("website_audits").insert(payload).execute()
         data = response.data or []
@@ -334,7 +346,7 @@ class Database:
         if client is None:
             return None
 
-        payload = {"audit_id": audit_id, **draft.model_dump()}
+        payload = {"audit_id": audit_id, **draft.model_dump(mode="json")}
         response = client.table("outreach_drafts").insert(payload).execute()
         data = response.data or []
         return str(data[0]["id"]) if data else None
@@ -512,13 +524,13 @@ class Database:
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-              AND table_name = ANY(:table_names)
+              AND table_name IN :table_names
             """
-        )
+        ).bindparams(bindparam("table_names", expanding=True))
 
         with self.engine.begin() as conn:
             conn.execute(connection_check).scalar_one()
-            rows = conn.execute(table_check, {"table_names": list(REQUIRED_TABLES)}).scalars().all()
+            rows = conn.execute(table_check, {"table_names": tuple(REQUIRED_TABLES)}).scalars().all()
 
         found_tables = {str(name) for name in rows}
         present_tables = [table_name for table_name in REQUIRED_TABLES if table_name in found_tables]

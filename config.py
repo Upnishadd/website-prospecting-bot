@@ -29,7 +29,6 @@ class Settings:
     max_asset_checks: int
     max_search_pages: int
     max_outreach_score: int
-    enable_playwright: bool
     search_provider: str
     search_base_url: str
     log_level: str
@@ -37,15 +36,41 @@ class Settings:
     enable_csv_export: bool
 
 
-def _as_bool(value: str, default: bool = False) -> bool:
+def _as_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _as_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(raw) if raw not in {None, ""} else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _as_float(name: str, default: float, minimum: float | None = None) -> float:
+    raw = os.getenv(name)
+    try:
+        value = float(raw) if raw not in {None, ""} else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
+
+
 def load_settings() -> Settings:
-    export_dir = BASE_DIR / os.getenv("EXPORT_DIR", "exports")
+    export_dir = BASE_DIR / (os.getenv("EXPORT_DIR") or "exports")
     export_dir.mkdir(parents=True, exist_ok=True)
+    min_delay_seconds = _as_float("MIN_DELAY_SECONDS", 1.5, minimum=0.0)
+    max_delay_seconds = max(min_delay_seconds, _as_float("MAX_DELAY_SECONDS", 3.5, minimum=0.0))
 
     return Settings(
         database_url=os.getenv("DATABASE_URL", ""),
@@ -59,15 +84,14 @@ def load_settings() -> Settings:
             "USER_AGENT",
             "WebsiteIssueProspectingBot/1.0 (+local research; contact admin@example.com)",
         ),
-        request_timeout=float(os.getenv("REQUEST_TIMEOUT", "15")),
-        max_redirects=int(os.getenv("MAX_REDIRECTS", "5")),
-        min_delay_seconds=float(os.getenv("MIN_DELAY_SECONDS", "1.5")),
-        max_delay_seconds=float(os.getenv("MAX_DELAY_SECONDS", "3.5")),
-        max_requests_per_domain=int(os.getenv("MAX_REQUESTS_PER_DOMAIN", "12")),
-        max_asset_checks=int(os.getenv("MAX_ASSET_CHECKS", "8")),
-        max_search_pages=int(os.getenv("MAX_SEARCH_PAGES", "5")),
-        max_outreach_score=int(os.getenv("MAX_OUTREACH_SCORE", "70")),
-        enable_playwright=_as_bool(os.getenv("ENABLE_PLAYWRIGHT", "false")),
+        request_timeout=_as_float("REQUEST_TIMEOUT", 15.0, minimum=1.0),
+        max_redirects=_as_int("MAX_REDIRECTS", 5, minimum=0),
+        min_delay_seconds=min_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+        max_requests_per_domain=_as_int("MAX_REQUESTS_PER_DOMAIN", 12, minimum=1),
+        max_asset_checks=_as_int("MAX_ASSET_CHECKS", 8, minimum=0),
+        max_search_pages=_as_int("MAX_SEARCH_PAGES", 5, minimum=1),
+        max_outreach_score=_as_int("MAX_OUTREACH_SCORE", 70, minimum=0, maximum=100),
         search_provider=os.getenv("SEARCH_PROVIDER", "duckduckgo_html"),
         search_base_url=os.getenv("SEARCH_BASE_URL", "https://html.duckduckgo.com/html/"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),

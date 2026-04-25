@@ -55,7 +55,7 @@ website-prospecting-bot/
 
 ## Setup
 
-1. Create and activate a Python 3.11+ virtual environment.
+1. Create and activate a Python 3.11 virtual environment.
 
 ```powershell
 python -m venv .venv
@@ -69,12 +69,6 @@ pip install -r requirements.txt
 ```
 
 3. Copy `.env.example` to `.env` and fill in the values.
-
-4. If you want Playwright-based rendering for JS-heavy pages, install Chromium once:
-
-```powershell
-playwright install chromium
-```
 
 ## Environment Variables
 
@@ -94,7 +88,6 @@ See `.env.example` for the full list. The main values are:
 - `MAX_DELAY_SECONDS`
 - `MAX_REQUESTS_PER_DOMAIN`
 - `MAX_ASSET_CHECKS`
-- `ENABLE_PLAYWRIGHT`
 - `SEARCH_PROVIDER`
 - `SEARCH_BASE_URL`
 
@@ -122,6 +115,8 @@ Tables created:
 - `businesses`
 - `website_audits`
 - `outreach_drafts`
+- `niche_city_queue`
+- `niche_city_seen_domains`
 
 Important audit fields:
 
@@ -172,6 +167,7 @@ python main.py --niche "plumbers" --location "Melbourne" --max-results 50 --no-c
 This bot is intentionally conservative.
 
 - It does not bypass CAPTCHA, login walls, paywalls, or anti-bot protections.
+- It does not use browser automation to work around bot checks or challenge pages.
 - It checks `robots.txt` where practical before fetching pages.
 - It uses configurable delays, rate limits, and exponential backoff.
 - It detects and classifies CAPTCHA pages, Cloudflare/WAF blocks, login walls, paywalls, rate limits, and challenge pages, then skips them safely.

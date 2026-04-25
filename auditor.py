@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import socket
 import ssl
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import httpx
@@ -98,7 +98,7 @@ class WebsiteAuditor:
         self.logger = logger
 
     def audit(self, business: Business) -> WebsiteAudit:
-        audit = WebsiteAudit(business_domain=business.normalized_domain, checked_at=datetime.utcnow())
+        audit = WebsiteAudit(business_domain=business.normalized_domain, checked_at=datetime.now(timezone.utc))
         target_url = normalize_url(business.website_url)
         https_url = self._as_https(target_url)
         http_url = self._as_http(target_url)
@@ -199,23 +199,6 @@ class WebsiteAuditor:
         audit.audit_status = "success"
         audit.ssl_valid = self._check_ssl_validity(normalize_domain(audit.final_url)) if audit.https_enabled else False
 
-        if self._should_try_playwright(html):
-            rendered = self._render_with_playwright(str(response.url))
-            if rendered:
-                html = rendered
-                protection = classify_page_protection(
-                    response.status_code,
-                    html,
-                    dict(response.headers),
-                    final_url=str(response.url),
-                )
-                if protection.blocked:
-                    audit.audit_status = protection.audit_status
-                    audit.blocked_reason = protection.reason
-                    audit.blocked_or_challenged = protection.audit_status == "blocked_or_challenged"
-                    audit.notes.append(protection.reason or "protected_page_detected")
-                    return audit
-
         parsed = parse_page_features(html, str(response.url))
         audit.mobile_viewport = parsed.mobile_viewport
         audit.missing_title = not bool(parsed.title)
@@ -224,12 +207,16 @@ class WebsiteAuditor:
         audit.has_mailto = parsed.has_mailto
         audit.has_phone_link = parsed.has_phone_link
         audit.outdated_design_signals = parsed.outdated_design_signals
+        asset_budget = max(0, self.settings.max_asset_checks)
+        image_budget = min(len(parsed.image_links), (asset_budget + 1) // 2)
+        internal_link_budget = max(0, asset_budget - image_budget)
+
         audit.broken_images_count = self._count_broken_links(
-            parsed.image_links[: self.settings.max_asset_checks],
+            parsed.image_links[:image_budget],
             fallback_to_get=False,
         )
         audit.broken_internal_links_count = self._count_broken_links(
-            parsed.internal_links[: self.settings.max_asset_checks],
+            parsed.internal_links[:internal_link_budget],
             fallback_to_get=True,
         )
 
@@ -241,27 +228,56 @@ class WebsiteAuditor:
     def _count_broken_links(self, urls: list[str], fallback_to_get: bool) -> int:
         broken = 0
         for url in urls:
-            try:
-                fetch = self.client.head(url)
-                status = fetch.response.status_code
-                protection = classify_page_protection(status, fetch.response.text, dict(fetch.response.headers), final_url=str(fetch.response.url))
-                if status >= 400 or protection.blocked:
-                    broken += 1
-            except (RobotsDisallowed, DomainLimitExceeded, RedirectLimitExceeded, httpx.TimeoutException):
+            is_broken = self._is_broken_link(url, fallback_to_get=fallback_to_get)
+            if is_broken is True:
                 broken += 1
-            except Exception:
-                if not fallback_to_get:
-                    broken += 1
-                    continue
-                try:
-                    fetch = self.client.get(url)
-                    status = fetch.response.status_code
-                    protection = classify_page_protection(status, fetch.response.text, dict(fetch.response.headers), final_url=str(fetch.response.url))
-                    if status >= 400 or protection.blocked:
-                        broken += 1
-                except Exception:
-                    broken += 1
         return broken
+
+    def _is_broken_link(self, url: str, fallback_to_get: bool) -> bool | None:
+        try:
+            fetch = self.client.head(url)
+        except (RobotsDisallowed, DomainLimitExceeded, RedirectLimitExceeded, httpx.TimeoutException) as exc:
+            self.logger.debug("Skipping link check for %s: %s", url, exc)
+            return None
+        except httpx.HTTPError as exc:
+            self.logger.debug("HEAD link check failed for %s: %s", url, exc)
+            return self._is_broken_link_with_get(url) if fallback_to_get else None
+
+        status = fetch.response.status_code
+        protection = classify_page_protection(
+            status,
+            fetch.response.text,
+            dict(fetch.response.headers),
+            final_url=str(fetch.response.url),
+        )
+        if protection.blocked:
+            self.logger.debug("Skipping protected link check result for %s: %s", url, protection.reason)
+            return None
+        if status in {405, 501}:
+            return self._is_broken_link_with_get(url) if fallback_to_get else None
+        return status >= 400
+
+    def _is_broken_link_with_get(self, url: str) -> bool | None:
+        try:
+            fetch = self.client.get(url)
+        except (RobotsDisallowed, DomainLimitExceeded, RedirectLimitExceeded, httpx.TimeoutException) as exc:
+            self.logger.debug("Skipping GET fallback link check for %s: %s", url, exc)
+            return None
+        except httpx.HTTPError as exc:
+            self.logger.debug("GET fallback link check failed for %s: %s", url, exc)
+            return None
+
+        status = fetch.response.status_code
+        protection = classify_page_protection(
+            status,
+            fetch.response.text,
+            dict(fetch.response.headers),
+            final_url=str(fetch.response.url),
+        )
+        if protection.blocked:
+            self.logger.debug("Skipping protected GET fallback result for %s: %s", url, protection.reason)
+            return None
+        return status >= 400
 
     def _as_https(self, url: str) -> str:
         parsed = urlparse(url)
@@ -274,33 +290,6 @@ class WebsiteAuditor:
         if not parsed.scheme:
             return f"http://{url}"
         return parsed._replace(scheme="http").geturl()
-
-    def _should_try_playwright(self, html: str) -> bool:
-        if not self.settings.enable_playwright:
-            return False
-        soup = BeautifulSoup(html or "", "html.parser")
-        body_text = soup.get_text(" ", strip=True)
-        script_count = len(soup.find_all("script"))
-        return len(body_text) < 100 and script_count >= 5
-
-    def _render_with_playwright(self, url: str) -> str | None:
-        try:
-            from playwright.sync_api import sync_playwright
-        except Exception as exc:
-            self.logger.debug("Playwright unavailable: %s", exc)
-            return None
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page(user_agent=self.settings.user_agent)
-                page.goto(url, wait_until="networkidle", timeout=int(self.settings.request_timeout * 1000))
-                html = page.content()
-                browser.close()
-                return html
-        except Exception as exc:
-            self.logger.debug("Playwright render failed for %s: %s", url, exc)
-            return None
 
     def _check_ssl_validity(self, hostname: str) -> bool:
         if not hostname:

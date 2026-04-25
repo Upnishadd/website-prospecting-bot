@@ -38,7 +38,7 @@ jobs:
       GMAIL_SENDER_EMAIL: ${{ secrets.GMAIL_SENDER_EMAIL }}
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       EMAIL_SENDER_NAME: ${{ vars.EMAIL_SENDER_NAME || 'Website Issue Prospecting Bot' }}
-      USER_AGENT: WebsiteIssueProspectingBot/1.0 (+public automation workflow; admin contact required)
+      USER_AGENT: WebsiteIssueProspectingBot/1.0 (+https://github.com/${{ github.repository }})
       REQUEST_TIMEOUT: "15"
       MAX_REDIRECTS: "5"
       MIN_DELAY_SECONDS: "2.0"
@@ -47,7 +47,6 @@ jobs:
       MAX_ASSET_CHECKS: "6"
       MAX_SEARCH_PAGES: "3"
       MAX_OUTREACH_SCORE: "70"
-      ENABLE_PLAYWRIGHT: "false"
       SEARCH_PROVIDER: duckduckgo_html
       SEARCH_BASE_URL: https://html.duckduckgo.com/html/
       LOG_LEVEL: INFO

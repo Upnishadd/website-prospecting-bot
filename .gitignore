@@ -1,3 +1,8 @@
 github.secrets.env
 github.variables.env
 .env
+__pycache__/
+*.pyc
+.pytest_cache/
+.uv-cache/
+pytest-cache-files-*

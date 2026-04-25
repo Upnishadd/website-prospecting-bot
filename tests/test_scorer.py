@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from models import WebsiteAudit
 from scorer import score_audit
@@ -8,7 +8,7 @@ from utils import normalize_domain, normalize_url
 def test_score_calculation_penalties_stack_and_floor():
     audit = WebsiteAudit(
         business_domain="example.com",
-        checked_at=datetime.utcnow(),
+        checked_at=datetime.now(timezone.utc),
         unreachable=True,
         https_enabled=False,
         load_time_seconds=5.2,

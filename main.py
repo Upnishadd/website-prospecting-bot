@@ -10,7 +10,7 @@ from exporter import export_to_csv
 from models import ExportRow, SummaryStats
 from outreach import generate_outreach_draft
 from scorer import score_audit
-from scraper import BusinessScraper
+from scraper import BusinessScraper, SearchProviderBlocked
 from utils import PoliteHttpClient, RobotsCache, get_logger
 
 
@@ -53,6 +53,8 @@ def main() -> None:
 
     if max_results is None:
         max_results = 50
+    if max_results <= 0:
+        raise SystemExit("--max-results must be greater than zero")
 
     logger.info("Starting prospecting run for niche=%s location=%s", niche, location)
 
@@ -63,12 +65,23 @@ def main() -> None:
         scraper = BusinessScraper(settings, client, logger)
         auditor = WebsiteAuditor(settings, client, logger)
 
-        businesses = scraper.discover_businesses_with_seen_domains(
-            niche=niche,
-            location=location,
-            max_results=max_results,
-            excluded_domains=excluded_domains,
-        )
+        search_blocked = False
+        try:
+            businesses = scraper.discover_businesses_with_seen_domains(
+                niche=niche,
+                location=location,
+                max_results=max_results,
+                excluded_domains=excluded_domains,
+            )
+        except SearchProviderBlocked as exc:
+            businesses = []
+            search_blocked = True
+            logger.warning(
+                "Search discovery was blocked or challenged for niche=%s location=%s; queue item will not be exhausted from this run (%s)",
+                niche,
+                location,
+                exc,
+            )
         logger.info("Discovered %s business candidates", len(businesses))
 
         export_rows: list[ExportRow] = []
@@ -93,14 +106,20 @@ def main() -> None:
                 if outreach_allowed:
                     draft = generate_outreach_draft(business, audit)
                     draft.recipient_email = business.email
-                    outreach_id = db.upsert_outreach(audit_id, draft)
-                    send_result = send_outreach_email(settings, business, draft)
-                    db.update_outreach_delivery(
-                        outreach_id=outreach_id,
-                        recipient_email=business.email,
-                        send_status=send_result.status,
-                        send_error=send_result.error,
-                    )
+                    outreach_id = db.upsert_outreach(audit_id, draft) if audit_id else None
+                    if outreach_id:
+                        send_result = send_outreach_email(settings, business, draft)
+                        db.update_outreach_delivery(
+                            outreach_id=outreach_id,
+                            recipient_email=business.email,
+                            send_status=send_result.status,
+                            send_error=send_result.error,
+                        )
+                    elif settings.enable_email_sending:
+                        logger.warning(
+                            "Skipped email sending for %s because no outreach draft was persisted",
+                            business.website_url,
+                        )
                     draft_subject = draft.subject
                     draft_body = draft.body
 
@@ -155,10 +174,15 @@ def main() -> None:
         else:
             summary.csv_path = "disabled"
 
-        if queue_item is not None and successful_business_inserts == 0:
+        if queue_item is not None and successful_business_inserts == 0 and not search_blocked:
             db.mark_queue_item_exhausted(queue_item.id)
             logger.info(
                 "Marked niche/city pair as exhausted because no business insert succeeded for queue item id=%s",
+                queue_item.id,
+            )
+        elif queue_item is not None and search_blocked:
+            logger.info(
+                "Left niche/city pair active because the discovery source was blocked or challenged for queue item id=%s",
                 queue_item.id,
             )
 
