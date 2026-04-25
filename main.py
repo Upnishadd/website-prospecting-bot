@@ -30,6 +30,7 @@ def main() -> None:
 
     db = Database(settings, BASE_DIR / "schema.sql", logger)
     db.ensure_schema()
+    db.check_connection_and_schema()
 
     queue_item = None
     niche = args.niche

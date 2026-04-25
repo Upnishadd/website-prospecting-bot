@@ -19,6 +19,15 @@ except Exception:  # pragma: no cover - optional import during static review
     create_client = None  # type: ignore[assignment]
 
 
+REQUIRED_TABLES = (
+    "businesses",
+    "website_audits",
+    "outreach_drafts",
+    "niche_city_queue",
+    "niche_city_seen_domains",
+)
+
+
 class Database:
     def __init__(self, settings: Settings, schema_path: Path, logger: logging.Logger) -> None:
         self.settings = settings
@@ -221,6 +230,30 @@ class Database:
         except Exception as exc:
             self._handle_db_error("seen domain insert", exc)
 
+    def check_connection_and_schema(self) -> bool:
+        if not self.available:
+            self.logger.warning("Database connection check skipped because no backend is available")
+            return False
+
+        try:
+            if self.backend == "supabase":
+                self._supabase_check_connection_and_schema()
+            elif self.backend == "postgres":
+                self._postgres_check_connection_and_schema()
+            else:
+                self.logger.warning("Database connection check skipped because backend is disabled")
+                return False
+        except Exception as exc:
+            self._handle_db_error("connection check", exc)
+            return False
+
+        self.logger.info(
+            "Database connection check succeeded for %s; found required tables: %s",
+            self.backend,
+            ", ".join(REQUIRED_TABLES),
+        )
+        return True
+
     def _handle_db_error(self, operation: str, exc: Exception) -> None:
         self.logger.error(
             "Database %s failed; continuing with CSV export only (%s)",
@@ -241,6 +274,14 @@ class Database:
         if callable(schema_method):
             return schema_method("public")
         return self.supabase
+
+    def _supabase_check_connection_and_schema(self) -> None:
+        client = self._supabase_public()
+        if client is None:
+            raise RuntimeError("Supabase client is unavailable")
+
+        for table_name in REQUIRED_TABLES:
+            client.table(table_name).select("*", count="exact").limit(1).execute()
 
     def _supabase_upsert_business(self, business: Business) -> Optional[str]:
         client = self._supabase_public()
@@ -448,6 +489,29 @@ class Database:
                 payload["id"] = existing_id
                 return str(conn.execute(update_existing, payload).scalar_one())
             return str(conn.execute(insert_new, payload).scalar_one())
+
+    def _postgres_check_connection_and_schema(self) -> None:
+        if self.engine is None:
+            raise RuntimeError("PostgreSQL engine is unavailable")
+
+        connection_check = text("SELECT 1")
+        table_check = text(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = ANY(:table_names)
+            """
+        )
+
+        with self.engine.begin() as conn:
+            conn.execute(connection_check).scalar_one()
+            rows = conn.execute(table_check, {"table_names": list(REQUIRED_TABLES)}).scalars().all()
+
+        found_tables = {str(name) for name in rows}
+        missing_tables = [table_name for table_name in REQUIRED_TABLES if table_name not in found_tables]
+        if missing_tables:
+            raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
 
     def _postgres_upsert_audit(self, business_id: str, audit: WebsiteAudit) -> Optional[str]:
         if self.engine is None:
